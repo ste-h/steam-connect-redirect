@@ -1,0 +1,562 @@
+#!/usr/bin/env python3
+# l4d2_server_browser.py
+
+import threading
+import queue
+import time
+import sys
+import os
+import webbrowser
+import tkinter as tk
+from tkinter import ttk, messagebox
+import requests
+import json
+
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # This loads the .env file
+except ImportError:
+    print("Warning: python-dotenv not installed. Install with: pip install python-dotenv")
+    print("Environment variables from .env file will not be loaded.")
+
+# Import your modified script (must be in the same folder or on PYTHONPATH)
+try:
+    import l4d2_server_scanner as scanner
+except Exception as e:
+    print("Error: Could not import l4d2_server_scanner.py. Make sure the modified script is named l4d2_server_scanner.py", file=sys.stderr)
+    raise
+
+class L4D2RankerUI(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("L4D2 Valve Versus Ranked - UI")
+        self.geometry("1200x500")
+
+        # --- Top controls ---
+        frm = ttk.Frame(self, padding=8)
+        frm.pack(side=tk.TOP, fill=tk.X)
+
+        # Load API key from environment variable if available
+        default_api_key = os.getenv('STEAM_API_KEY', '')
+        self.api_key_var = tk.StringVar(value=default_api_key)
+        self.limit_var = tk.IntVar(value=10000)
+        self.timeout_var = tk.DoubleVar(value=1.0)
+        self.sample_var = tk.IntVar(value=1500)
+        self.workers_var = tk.IntVar(value=64)
+
+        ttk.Label(frm, text="API Key:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(frm, textvariable=self.api_key_var, width=42, show="•").grid(row=0, column=1, sticky="w", padx=(4, 12))
+
+        ttk.Label(frm, text="Limit:").grid(row=0, column=2, sticky="w")
+        ttk.Entry(frm, textvariable=self.limit_var, width=8).grid(row=0, column=3, sticky="w", padx=(4, 12))
+
+        ttk.Label(frm, text="Timeout(s):").grid(row=0, column=4, sticky="w")
+        ttk.Entry(frm, textvariable=self.timeout_var, width=8).grid(row=0, column=5, sticky="w", padx=(4, 12))
+
+        ttk.Label(frm, text="Sample:").grid(row=0, column=6, sticky="w")
+        ttk.Entry(frm, textvariable=self.sample_var, width=8).grid(row=0, column=7, sticky="w", padx=(4, 12))
+
+        ttk.Label(frm, text="Workers:").grid(row=0, column=8, sticky="w")
+        ttk.Entry(frm, textvariable=self.workers_var, width=8).grid(row=0, column=9, sticky="w", padx=(4, 12))
+
+        self.refresh_btn = ttk.Button(frm, text="Refresh", command=self.on_refresh)
+        self.refresh_btn.grid(row=0, column=10, padx=(6, 0))
+
+        # Discord controls row - load from environment variables
+        discord_frm = ttk.LabelFrame(self, text="Discord Settings", padding=8)
+        discord_frm.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(0, 8))
+
+        default_discord_token = os.getenv('DISCORD_BOT_TOKEN', '')
+        default_discord_channel = os.getenv('DISCORD_CHANNEL_ID', '')
+        
+        self.discord_token_var = tk.StringVar(value=default_discord_token)
+        self.discord_channel_var = tk.StringVar(value=default_discord_channel)
+        self.github_base_var = tk.StringVar(value="https://ste-h.github.io/steam-connect-redirect/")
+
+        ttk.Label(discord_frm, text="Bot Token:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(discord_frm, textvariable=self.discord_token_var, width=50, show="•").grid(row=0, column=1, sticky="w", padx=(4, 12))
+
+        ttk.Label(discord_frm, text="Channel ID:").grid(row=0, column=2, sticky="w")
+        ttk.Entry(discord_frm, textvariable=self.discord_channel_var, width=20).grid(row=0, column=3, sticky="w", padx=(4, 12))
+
+        ttk.Label(discord_frm, text="GitHub Redirect:").grid(row=1, column=0, sticky="w")
+        ttk.Entry(discord_frm, textvariable=self.github_base_var, width=50).grid(row=1, column=1, sticky="w", padx=(4, 12))
+
+        # Status line
+        self.status_var = tk.StringVar(value="Idle")
+        ttk.Label(self, textvariable=self.status_var, anchor="w", padding=(8, 4)).pack(side=tk.BOTTOM, fill=tk.X)
+
+        # --- Table ---
+        cols = ("score","name","map","players","max_players","ping_ms","ip","port","region","link","discord")
+        self.tree = ttk.Treeview(self, columns=cols, show="headings", selectmode="browse")
+        self.tree.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        # Zebra-stripe row tag styles (background + font color)
+        self.tree.tag_configure("even", background="#ffffff", foreground="#1a1a1a")
+        self.tree.tag_configure("odd",  background="#f2f7fb", foreground="#273a52")
+
+        headings = {
+            "score": "Score",
+            "name": "Name",
+            "map": "Map",
+            "players": "Players",
+            "max_players": "Max",
+            "ping_ms": "Ping (ms)",
+            "ip": "IP",
+            "port": "Port",
+            "region": "Region",
+            "link": "Connect",
+            "discord": "Copy+Send Discord",
+        }
+        widths = {
+            "score": 80,
+            "name": 280,
+            "map": 120,
+            "players": 80,
+            "max_players": 60,
+            "ping_ms": 90,
+            "ip": 120,
+            "port": 70,
+            "region": 70,
+            "link": 160,
+            "discord": 120,
+        }
+        for c in cols:
+            self.tree.heading(c, text=headings[c], command=lambda c=c: self.sort_by_column(c, False))
+            self.tree.column(c, width=widths[c], anchor="w")
+
+        # Open link on double-click
+        self.tree.bind("<Double-1>", self.on_double_click)
+
+        # Copy connect URL with Ctrl+C / Cmd+C
+        self.tree.bind("<Control-c>", self.on_copy_link)
+
+        # Send to Discord with Ctrl+D
+        self.tree.bind("<Control-d>", self.on_send_to_discord)
+
+        # Threading helpers
+        self.worker_thread = None
+        self.result_queue = queue.Queue()
+
+    def set_status(self, text: str):
+        self.status_var.set(text)
+        self.update_idletasks()
+
+    def send_discord_message(self, message: str, channel_id: str, token: str) -> tuple[bool, str]:
+        """
+        Send a message to a Discord channel using a bot token.
+        Returns (success: bool, message: str)
+        """
+        try:
+            # First, extract the URL from the message before we parse anything else
+            # The URL is in the format: **[Click to Connect](URL)**
+            import re
+            url_match = re.search(r'\*\*\[Click to Connect\]\((.*?)\)\*\*', message)
+            connect_url = url_match.group(1) if url_match else ""
+            
+            # Parse the rest of the message to extract server info
+            lines = message.strip().split('\n')
+            server_map = ""
+            players = ""
+            ping = ""
+            campaign_info = ""
+            
+            for line in lines:
+                if 'Map:' in line:
+                    # Extract map from backticks
+                    map_match = re.search(r'`([^`]+)`', line)
+                    if map_match:
+                        server_map = map_match.group(1)
+                    # Extract campaign info from parentheses
+                    campaign_match = re.search(r'\(([^)]+)\)', line)
+                    if campaign_match:
+                        campaign_info = campaign_match.group(1)
+                elif 'Players:' in line:
+                    # Extract players from backticks
+                    players_match = re.search(r'`([^`]+)`', line)
+                    if players_match:
+                        players = players_match.group(1)
+                    # Add emoji
+                    if '🟢' in line:
+                        players += ' 🟢'
+                    elif '🟡' in line:
+                        players += ' 🟡'
+                    elif '🔴' in line:
+                        players += ' 🔴'
+                elif 'Ping:' in line:
+                    # Extract ping from backticks
+                    ping_match = re.search(r'`([^`]+)`', line)
+                    if ping_match:
+                        ping = ping_match.group(1)
+                    # Add emoji
+                    if '🟢' in line:
+                        ping += ' 🟢'
+                    elif '🟡' in line:
+                        ping += ' 🟡'
+                    elif '🔴' in line:
+                        ping += ' 🔴'
+            
+            # Debug: print what we found
+            print(f"Debug - Connect URL: {connect_url}")
+            print(f"Debug - Map: {server_map}")
+            print(f"Debug - Campaign: {campaign_info}")
+            print(f"Debug - Players: {players}")
+            print(f"Debug - Ping: {ping}")
+            
+            # Create Discord embed
+            embed = {
+                "title": "L4D2 Server",
+                "color": 6710886,  # Purple color
+                "fields": [
+                    {
+                        "name": "📍 Map",
+                        "value": f"`{server_map}`" if server_map else "`Unknown`",
+                        "inline": True
+                    },
+                    {
+                        "name": "👥 Players",
+                        "value": f"`{players}`" if players else "`Unknown`",
+                        "inline": True
+                    },
+                    {
+                        "name": "📶 Ping",
+                        "value": f"`{ping}`" if ping else "`Unknown`",
+                        "inline": True
+                    }
+                ],
+                "footer": {
+                    "text": "Left 4 Dead 2"
+                }
+            }
+            
+            # Add description with campaign info and link
+            if campaign_info:
+                embed["description"] = f"**{campaign_info}**\n"
+            else:
+                embed["description"] = ""
+            
+            if connect_url:
+                embed["description"] += f"[**Click here to connect to server**]({connect_url})"
+            else:
+                # Fallback: just send the message as plain text if we can't parse it
+                print("Warning: Could not parse connect URL, sending plain message")
+                data = {"content": message}
+                response = requests.post(
+                    f"https://discord.com/api/v10/channels/{channel_id}/messages",
+                    headers={
+                        "Authorization": f"Bot {token}",
+                        "Content-Type": "application/json"
+                    },
+                    json=data,
+                    timeout=10
+                )
+                if response.status_code == 200:
+                    return (True, "Message sent to Discord (plain text fallback)")
+                else:
+                    return (False, f"Discord API error: Status {response.status_code}")
+            
+            data = {
+                "embeds": [embed]
+            }
+            
+            url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+            headers = {
+                "Authorization": f"Bot {token}",
+                "Content-Type": "application/json"
+            }
+            
+            response = requests.post(url, headers=headers, json=data, timeout=10)
+            
+            if response.status_code == 200:
+                return (True, "Message sent to Discord successfully")
+            elif response.status_code == 401:
+                return (False, "Discord authentication failed. Check your bot token.")
+            elif response.status_code == 403:
+                return (False, "Bot doesn't have permission to send messages in this channel.")
+            elif response.status_code == 404:
+                return (False, "Discord channel not found. Check the channel ID.")
+            elif response.status_code == 400:
+                # Try to get more specific error info
+                try:
+                    error_data = response.json()
+                    error_msg = str(error_data)
+                except:
+                    error_msg = "Invalid request format"
+                return (False, f"Discord API error (400): {error_msg}")
+            else:
+                try:
+                    error_msg = response.json().get('message', 'Unknown error')
+                except:
+                    error_msg = f"Status {response.status_code}"
+                return (False, f"Discord API error: {error_msg}")
+                
+        except requests.exceptions.Timeout:
+            return (False, "Discord request timed out")
+        except requests.exceptions.ConnectionError:
+            return (False, "Could not connect to Discord API")
+        except Exception as e:
+            return (False, f"Error sending to Discord: {str(e)}")
+
+    def on_send_to_discord(self, event=None):
+        """Send the selected server link to Discord and copy GitHub redirect URL to clipboard"""
+        # Get Discord settings
+        token = self.discord_token_var.get().strip()
+        channel_id = self.discord_channel_var.get().strip()
+        github_base = self.github_base_var.get().strip()
+        
+        if not token or not channel_id:
+            messagebox.showwarning("Discord Settings", "Please enter both Discord bot token and channel ID.")
+            return
+
+        # Get selected item
+        item = self.tree.focus() or (self.tree.selection()[0] if self.tree.selection() else "")
+        if not item:
+            self.set_status("Nothing selected to send")
+            return
+
+        values = self.tree.item(item, "values")
+        if not values or len(values) < 9:
+            self.set_status("Invalid row selected")
+            return
+
+        # Extract server info
+        server_name = values[1]  # name
+        server_map = values[2]   # map
+        players = values[3]      # players
+        max_players = values[4]  # max_players
+        ping = values[5]         # ping_ms
+        ip = values[6]           # ip
+        port = values[7]         # port
+        steam_link = values[9]   # original steam:// link
+        
+        # Create the GitHub redirect URL with query parameters
+        if steam_link and steam_link.startswith("steam://connect/") and github_base:
+            # Get additional server info and URL encode to handle special characters
+            from urllib.parse import quote
+            encoded_name = quote(server_name)
+            encoded_map = quote(server_map)
+            
+            # Build URL with all server information
+            github_url = (f"{github_base}?server={ip}&port={port}"
+                         f"&name={encoded_name}&map={encoded_map}"
+                         f"&players={players}&max_players={max_players}"
+                         f"&ping={ping}")
+        else:
+            github_url = steam_link
+
+        # Create Discord message with clickable link format
+        message = f"""**{server_name}**
+Map: `{server_map}`
+Players: `{players}/{max_players}`
+Ping: `{ping}ms`
+**[Click to Connect]({github_url})**"""
+
+        # Send to Discord in a separate thread to avoid blocking UI
+        def send_async():
+            success, msg = self.send_discord_message(message, channel_id, token)
+            
+            # If successful, also copy the GitHub URL to clipboard
+            if success:
+                def copy_to_clipboard():
+                    try:
+                        self.clipboard_clear()
+                        self.clipboard_append(github_url)
+                        self.update()  # ensures clipboard content is set
+                        self.set_status(f"{msg} - GitHub redirect URL copied to clipboard")
+                    except Exception as e:
+                        self.set_status(f"{msg} - Failed to copy to clipboard: {str(e)}")
+                
+                # Update UI from main thread
+                self.after(0, copy_to_clipboard)
+            else:
+                # Update UI from main thread
+                self.after(0, lambda: self.set_status(msg))
+                if "authentication failed" in msg.lower() or "permission" in msg.lower():
+                    self.after(0, lambda: messagebox.showerror("Discord Error", msg))
+
+        threading.Thread(target=send_async, daemon=True).start()
+        self.set_status("Sending to Discord...")
+
+    def on_refresh(self):
+        api_key = self.api_key_var.get().strip()
+        if not api_key:
+            messagebox.showwarning("Missing API Key", "Please enter your Steam Web API key.")
+            return
+
+        if self.worker_thread and self.worker_thread.is_alive():
+            messagebox.showinfo("Busy", "A refresh is already running.")
+            return
+
+        self.refresh_btn.config(state=tk.DISABLED)
+        self.set_status("Refreshing… (fetching, filtering, pinging, scoring)")
+        self.clear_table()
+
+        args = dict(
+            api_key=api_key,
+            limit=self.limit_var.get(),
+            timeout=self.timeout_var.get(),
+            sample=self.sample_var.get(),
+            workers=self.workers_var.get(),
+        )
+        self.worker_thread = threading.Thread(target=self._do_refresh, args=(args,), daemon=True)
+        self.worker_thread.start()
+        self.after(200, self._poll_worker)
+
+    def _do_refresh(self, args):
+        try:
+            rows = scanner.generate_ranked_rows(**args)
+            self.result_queue.put(("ok", rows))
+        except Exception as e:
+            self.result_queue.put(("err", str(e)))
+
+    def _poll_worker(self):
+        try:
+            kind, payload = self.result_queue.get_nowait()
+        except queue.Empty:
+            # still working
+            if self.worker_thread and self.worker_thread.is_alive():
+                self.after(250, self._poll_worker)
+            else:
+                # Shouldn't happen, but reset UI anyway
+                self.refresh_btn.config(state=tk.NORMAL)
+                self.set_status("Idle")
+            return
+
+        if kind == "ok":
+            rows = payload
+            self.populate_table(rows)
+            self.set_status(f"Loaded {len(rows)} rows")
+        else:
+            messagebox.showerror("Error", payload)
+            self.set_status("Error")
+        self.refresh_btn.config(state=tk.NORMAL)
+
+    def clear_table(self):
+        for iid in self.tree.get_children():
+            self.tree.delete(iid)
+
+    def populate_table(self, rows):
+        for idx, r in enumerate(rows):
+            tag = "even" if idx % 2 == 0 else "odd"
+            self.tree.insert("", tk.END, values=(
+                r.get("score",""),
+                r.get("name",""),
+                r.get("map",""),
+                r.get("players",""),
+                r.get("max_players",""),
+                r.get("ping_ms",""),
+                r.get("ip",""),
+                r.get("port",""),
+                r.get("region",""),
+                r.get("link",""),
+                "📤 Send",  # Discord column indicator
+            ), tags=(tag,))
+
+    def sort_by_column(self, col, reverse):
+        # Skip sorting for the discord column
+        if col == "discord":
+            return
+            
+        # Get current rows
+        data = [(self.tree.set(k, col), k) for k in self.tree.get_children("")]
+
+        # Try numeric sort, fallback to string
+        def to_number(s):
+            try:
+                return float(s)
+            except Exception:
+                return s
+
+        data.sort(key=lambda t: to_number(t[0]), reverse=reverse)
+
+        # Reinsert in sorted order
+        for index, (val, k) in enumerate(data):
+            self.tree.move(k, "", index)
+
+        # Re-apply alternating tags so stripes stay correct
+        for index, k in enumerate(self.tree.get_children("")):
+            tag = "even" if index % 2 == 0 else "odd"
+            self.tree.item(k, tags=(tag,))
+
+        # Toggle next click
+        self.tree.heading(col, command=lambda c=col: self.sort_by_column(c, not reverse))
+
+    def on_double_click(self, event):
+        item = self.tree.identify_row(event.y)
+        col = self.tree.identify_column(event.x)
+        
+        if not item:
+            return
+        values = self.tree.item(item, "values")
+        if not values:
+            return
+            
+        # Check if clicked on Discord column
+        if col == "#11":  # Discord column (11th column, 0-indexed)
+            self.on_send_to_discord()
+            return
+            
+        # Otherwise open the connect link
+        link = values[9]  # "link" is the 10th column
+        if link:
+            try:
+                webbrowser.open(link)
+            except Exception as e:
+                messagebox.showerror("Open Link Failed", str(e))
+                
+    def on_copy_link(self, event=None):
+        # Use focused/selected item
+        item = self.tree.focus() or (self.tree.selection()[0] if self.tree.selection() else "")
+        if not item:
+            self.set_status("Nothing selected to copy")
+            return
+
+        values = self.tree.item(item, "values")
+        if not values or len(values) < 10:
+            self.set_status("No link in the selected row")
+            return
+
+        # Get the GitHub redirect URL with query parameters including server info
+        steam_link = values[9]  # right-most "link" column
+        github_base = self.github_base_var.get().strip()
+        ip = values[6]  # ip column
+        port = values[7]  # port column
+        
+        if steam_link and steam_link.startswith("steam://connect/") and github_base:
+            # Get additional server info
+            from urllib.parse import quote
+            server_name = values[1]  # name
+            server_map = values[2]   # map
+            players = values[3]      # players
+            max_players = values[4]  # max_players
+            ping = values[5]         # ping_ms
+            
+            # URL encode to handle special characters
+            encoded_name = quote(server_name)
+            encoded_map = quote(server_map)
+            
+            # Build URL with all server information
+            link = (f"{github_base}?server={ip}&port={port}"
+                   f"&name={encoded_name}&map={encoded_map}"
+                   f"&players={players}&max_players={max_players}"
+                   f"&ping={ping}")
+        else:
+            link = steam_link
+            
+        if not link:
+            self.set_status("Empty link")
+            return
+
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(link)
+            # Keep clipboard after window closes (where supported)
+            self.update()  # ensures clipboard content is set
+            self.set_status("Copied GitHub redirect URL to clipboard")
+        except Exception as e:
+            messagebox.showerror("Copy Failed", str(e))
+
+if __name__ == "__main__":
+    app = L4D2RankerUI()
+    app.mainloop()
