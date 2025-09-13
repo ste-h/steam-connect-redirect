@@ -2,22 +2,148 @@
 <html>
 <head>
     <title>Steam Server Redirect</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .container {
+            text-align: center;
+            background: white;
+            padding: 2rem;
+            border-radius: 10px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            max-width: 400px;
+        }
+        h2 {
+            color: #333;
+            margin-bottom: 1rem;
+        }
+        .steam-icon {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 1rem;
+        }
+        .status {
+            color: #666;
+            margin-top: 1rem;
+        }
+        .error {
+            color: #e74c3c;
+            margin-top: 1rem;
+        }
+        .manual-connect {
+            margin-top: 2rem;
+            padding-top: 2rem;
+            border-top: 1px solid #eee;
+        }
+        .manual-connect a {
+            display: inline-block;
+            padding: 0.75rem 1.5rem;
+            background: #171a21;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            transition: background 0.3s;
+        }
+        .manual-connect a:hover {
+            background: #2a2e3a;
+        }
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 1rem auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
     <script>
         function redirect() {
-            const urlParams = new URLSearchParams(window.location.search);
-            const server = urlParams.get('server');
-            const port = urlParams.get('port');
+            let steamUrl = null;
+            let displayUrl = '';
             
-            if (server && port) {
-                const steamUrl = `steam://connect/${server}:${port}`;
+            // First check for fragment (after #)
+            if (window.location.hash) {
+                const hash = window.location.hash.substring(1); // Remove the #
+                if (hash.startsWith('steam://')) {
+                    steamUrl = hash;
+                    displayUrl = hash;
+                }
+            }
+            
+            // Fallback to query parameters
+            if (!steamUrl) {
+                const urlParams = new URLSearchParams(window.location.search);
+                const server = urlParams.get('server');
+                const port = urlParams.get('port');
+                
+                if (server && port) {
+                    steamUrl = `steam://connect/${server}:${port}`;
+                    displayUrl = `${server}:${port}`;
+                }
+            }
+            
+            if (steamUrl) {
+                // Show what we're connecting to
+                document.getElementById('status').innerHTML = 
+                    `<div class="spinner"></div>
+                     <p>Connecting to server...</p>
+                     <p style="font-family: monospace; color: #667eea;">${displayUrl}</p>`;
+                
+                // Try to redirect
                 window.location.href = steamUrl;
+                
+                // Show manual connect option after a delay (in case redirect fails)
+                setTimeout(() => {
+                    document.getElementById('manual-connect').innerHTML = 
+                        `<div class="manual-connect">
+                            <p>If Steam didn't open automatically:</p>
+                            <a href="${steamUrl}">Click here to connect</a>
+                            <p style="margin-top: 1rem; font-size: 0.9em; color: #999;">
+                                Or copy this link: <br>
+                                <code style="background: #f5f5f5; padding: 0.25rem 0.5rem; border-radius: 3px;">
+                                    ${steamUrl}
+                                </code>
+                            </p>
+                        </div>`;
+                }, 2000);
             } else {
-                document.getElementById('status').innerHTML = 'Use format: yoursite.github.io?server=IP&port=PORT';
+                document.getElementById('status').innerHTML = 
+                    `<p class="error">❌ No server information provided</p>
+                     <p>Use one of these formats:</p>
+                     <p style="font-family: monospace; background: #f5f5f5; padding: 1rem; border-radius: 5px;">
+                        yoursite.github.io/#steam://connect/IP:PORT<br>
+                        yoursite.github.io/?server=IP&port=PORT
+                     </p>`;
             }
         }
+        
+        // Run on page load
+        window.onload = redirect;
     </script>
 </head>
 <body>
-    <h2>Redirecting to Steam...</h2>
+    <div class="container">
+        <svg class="steam-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM12 20C7.59 20 4 16.41 4 12C4 7.59 7.59 4 12 4C16.41 4 20 7.59 20 12C20 16.41 16.41 20 12 20Z" fill="#171a21"/>
+            <path d="M9 11.75C9 10.7835 9.7835 10 10.75 10C11.7165 10 12.5 10.7835 12.5 11.75C12.5 12.7165 11.7165 13.5 10.75 13.5C9.7835 13.5 9 12.7165 9 11.75Z" fill="#171a21"/>
+            <path d="M13.25 8C14.2165 8 15 8.7835 15 9.75C15 10.7165 14.2165 11.5 13.25 11.5C12.2835 11.5 11.5 10.7165 11.5 9.75C11.5 8.7835 12.2835 8 13.25 8Z" fill="#171a21"/>
+        </svg>
+        <h2>Steam Server Redirect</h2>
+        <div id="status"></div>
+        <div id="manual-connect"></div>
+    </div>
 </body>
 </html>
