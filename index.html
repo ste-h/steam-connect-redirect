@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Steam Server Redirect</title>
+    <script>
+        function redirect() {
+            const fragment = window.location.hash.substring(1);
+            
+            if (fragment) {
+                const steamUrl = decodeURIComponent(fragment);
+                window.location.href = steamUrl;
+            } else {
+                document.getElementById('status').innerHTML = 'No server specified. Use format: yoursite.github.io#steam://connect/ip:port';
+            }
+        }
+        
+        window.onload = redirect;
+    </script>
+</head>
+<body>
+    <h2>Redirecting to Steam...</h2>
+    <p id="status">Loading...</p>
+    <p><small>If redirect doesn't work, make sure Steam is installed.</small></p>
+</body>
+</html>
