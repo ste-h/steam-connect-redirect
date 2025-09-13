@@ -1,8 +1,24 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Steam Server Redirect</title>
+    <title>L4D2 Server Connect</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    
+    <!-- Discord/OpenGraph Embed Tags -->
+    <meta property="og:title" content="L4D2 Server Connect" />
+    <meta property="og:description" content="Click to join Left 4 Dead 2 server" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://ste-h.github.io/steam-connect-redirect/" />
+    <meta property="og:image" content="https://cdn.cloudflare.steamstatic.com/steam/apps/550/header.jpg" />
+    <meta property="og:site_name" content="L4D2 Quick Connect" />
+    <meta name="theme-color" content="#667eea">
+    
+    <!-- Twitter Card tags -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="L4D2 Server Connect">
+    <meta name="twitter:description" content="Click to join Left 4 Dead 2 server">
+    <meta name="twitter:image" content="https://cdn.cloudflare.steamstatic.com/steam/apps/550/header.jpg">
+    
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -154,33 +170,80 @@
             'c14': 'The Last Stand'
         };
 
-        function parseServerInfo(steamUrl) {
-            // Parse additional info from URL if available
+        function updateMetaTags(serverInfo) {
+            // Dynamically update meta tags for Discord embed
+            if (serverInfo.name || serverInfo.map) {
+                let title = 'L4D2: ';
+                if (serverInfo.campaign) {
+                    title += serverInfo.campaign;
+                    if (serverInfo.mapNumber) {
+                        title += ' - Map ' + serverInfo.mapNumber;
+                    }
+                } else if (serverInfo.map) {
+                    title += serverInfo.map;
+                }
+                
+                let description = '';
+                if (serverInfo.name) {
+                    description = serverInfo.name + '\n';
+                }
+                if (serverInfo.players && serverInfo.maxPlayers) {
+                    description += `Players: ${serverInfo.players}/${serverInfo.maxPlayers}`;
+                }
+                if (serverInfo.ping) {
+                    description += ` | Ping: ${serverInfo.ping}ms`;
+                }
+                
+                // Update existing meta tags
+                document.querySelector('meta[property="og:title"]')?.setAttribute('content', title);
+                document.querySelector('meta[property="og:description"]')?.setAttribute('content', description);
+                document.querySelector('meta[name="twitter:title"]')?.setAttribute('content', title);
+                document.querySelector('meta[name="twitter:description"]')?.setAttribute('content', description);
+                
+                // Update page title
+                document.title = title;
+            }
+        }
+
+        function parseServerInfo() {
             const urlParams = new URLSearchParams(window.location.search);
+            let steamUrl = null;
+            let info = {};
             
-            // Extract IP and port from steam URL
-            let ip = '';
-            let port = '';
-            if (steamUrl.includes('://connect/')) {
-                const connectPart = steamUrl.split('://connect/')[1];
-                if (connectPart.includes(':')) {
-                    [ip, port] = connectPart.split(':');
+            // Check for query parameters (preferred method)
+            const server = urlParams.get('server');
+            const port = urlParams.get('port');
+            
+            if (server && port) {
+                steamUrl = `steam://connect/${server}:${port}`;
+                info = {
+                    ip: server,
+                    port: port,
+                    name: decodeURIComponent(urlParams.get('name') || ''),
+                    map: decodeURIComponent(urlParams.get('map') || ''),
+                    players: urlParams.get('players'),
+                    maxPlayers: urlParams.get('max_players'),
+                    ping: urlParams.get('ping'),
+                    steamUrl: steamUrl
+                };
+            } 
+            // Fallback: check for fragment with steam URL
+            else if (window.location.hash) {
+                const hash = window.location.hash.substring(1);
+                if (hash.startsWith('steam://')) {
+                    steamUrl = hash;
+                    const connectMatch = hash.match(/steam:\/\/connect\/([^:]+):(\d+)/);
+                    if (connectMatch) {
+                        info = {
+                            ip: connectMatch[1],
+                            port: connectMatch[2],
+                            steamUrl: steamUrl
+                        };
+                    }
                 }
             }
             
-            // Get additional parameters if passed
-            const info = {
-                ip: ip || urlParams.get('server') || 'Unknown',
-                port: port || urlParams.get('port') || 'Unknown',
-                name: urlParams.get('name') || decodeURIComponent(urlParams.get('n') || ''),
-                map: urlParams.get('map') || decodeURIComponent(urlParams.get('m') || ''),
-                players: urlParams.get('players') || urlParams.get('p'),
-                maxPlayers: urlParams.get('max_players') || urlParams.get('mp'),
-                ping: urlParams.get('ping') || urlParams.get('pg'),
-                steamUrl: steamUrl
-            };
-            
-            // Try to parse campaign from map name
+            // Parse campaign info from map name
             if (info.map) {
                 const mapMatch = info.map.match(/^c(\d+)m(\d+)_(.+)/i);
                 if (mapMatch) {
@@ -220,36 +283,29 @@
                 }, 2000);
             }).catch(err => {
                 console.error('Failed to copy:', err);
+                // Fallback for older browsers
+                const textArea = document.createElement('textarea');
+                textArea.value = text;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+                
+                const button = event.target;
+                const originalText = button.textContent;
+                button.textContent = '✓ Copied!';
+                setTimeout(() => {
+                    button.textContent = originalText;
+                }, 2000);
             });
         }
 
         function redirect() {
-            let steamUrl = null;
-            let displayUrl = '';
+            const serverInfo = parseServerInfo();
             
-            // First check for fragment (after #)
-            if (window.location.hash) {
-                const hash = window.location.hash.substring(1); // Remove the #
-                if (hash.startsWith('steam://')) {
-                    steamUrl = hash;
-                    displayUrl = hash;
-                }
-            }
-            
-            // Fallback to query parameters
-            if (!steamUrl) {
-                const urlParams = new URLSearchParams(window.location.search);
-                const server = urlParams.get('server');
-                const port = urlParams.get('port');
-                
-                if (server && port) {
-                    steamUrl = `steam://connect/${server}:${port}`;
-                    displayUrl = `${server}:${port}`;
-                }
-            }
-            
-            if (steamUrl) {
-                const serverInfo = parseServerInfo(steamUrl);
+            if (serverInfo.steamUrl) {
+                // Update meta tags for Discord
+                updateMetaTags(serverInfo);
                 
                 // Build server info HTML
                 let serverInfoHtml = '<div class="server-info"><h3>🎮 Server Information</h3>';
@@ -302,19 +358,19 @@
                      ${serverInfoHtml}`;
                 
                 // Try to redirect
-                window.location.href = steamUrl;
+                window.location.href = serverInfo.steamUrl;
                 
                 // Show manual connect options after a delay
                 setTimeout(() => {
                     document.getElementById('manual-connect').innerHTML = 
                         `<div class="manual-connect">
                             <p><strong>If Steam didn't open automatically:</strong></p>
-                            <a href="${steamUrl}" class="connect-button primary">🚀 Connect to Server</a>
-                            <button onclick="copyToClipboard('${steamUrl}')" class="connect-button copy-button">📋 Copy Link</button>
+                            <a href="${serverInfo.steamUrl}" class="connect-button primary">🚀 Connect to Server</a>
+                            <button onclick="copyToClipboard('${serverInfo.steamUrl}')" class="connect-button copy-button">📋 Copy Link</button>
                             <p style="margin-top: 1rem; font-size: 0.9em; color: #999;">
                                 Steam link: <br>
                                 <code style="background: #f5f5f5; padding: 0.25rem 0.5rem; border-radius: 3px; word-break: break-all;">
-                                    ${steamUrl}
+                                    ${serverInfo.steamUrl}
                                 </code>
                             </p>
                         </div>`;
